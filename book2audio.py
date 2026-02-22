@@ -1,5 +1,4 @@
-#!/usr/bin/env python3.11
-#
+#!/usr/bin/env python3
 import argparse
 import os
 import re
@@ -10,6 +9,15 @@ import tempfile
 
 from bs4 import BeautifulSoup
 from ebooklib import epub
+
+# Mapping language codes to common macOS voices
+VOICE_MAPPING = {
+    "en-US": "Samantha",
+    "en-GB": "Daniel",
+    "es-ES": "Monica",
+    "es-MX": "Paulina",
+    "es-LA": "Paulina",
+}
 
 
 def log(message, verbose):
@@ -111,6 +119,13 @@ def process_book(filepath, args):
     safe_author = re.sub(r'[\\/*?:"<>|]', "", author)
     safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
 
+    # Determine Voice
+    voice = VOICE_MAPPING.get(args.lang)
+    if voice:
+        log(f"Using voice: {voice} for language: {args.lang}", args.verbose)
+    elif args.lang:
+        log(f"Language {args.lang} not in presets, letting macOS decide.", args.verbose)
+
     # Iterate through chapters
     chapter_num = 1
     for item in book.get_items():
@@ -118,8 +133,8 @@ def process_book(filepath, args):
             content = item.get_content()
             text = clean_html(content).strip()
 
-            # Skip empty chapters
-            if len(text) < 100:
+            # Skip empty chapters or very short segments (TOC, etc.)
+            if len(text) < 150:
                 continue
 
             log(f"Processing Chapter {chapter_num}...", args.verbose)
@@ -130,17 +145,22 @@ def process_book(filepath, args):
                 "${Author}", safe_author
             ).replace("${Title}", safe_title)
             final_filename = filename_template % chapter_num
-            # Handle the extension replacement manually or ensure it's in the template
+
             if "${ext}" in final_filename:
-                final_filename = final_filename.replace("${ext}", ext.strip("."))
+                final_filename = final_filename.replace("${ext}", ext.lstrip("."))
             else:
                 final_filename += ext
 
             # TTS Generation
             temp_aiff = tempfile.NamedTemporaryFile(suffix=".aiff", delete=False).name
             try:
-                # Use macOS native 'say' command
-                subprocess.run(["say", "-o", temp_aiff, text], check=True)
+                # Build 'say' command
+                say_cmd = ["say", "-o", temp_aiff]
+                if voice:
+                    say_cmd += ["-v", voice]
+                say_cmd.append(text)
+
+                subprocess.run(say_cmd, check=True)
 
                 # Convert to target format
                 convert_audio(temp_aiff, final_filename, ext, args.verbose)
@@ -164,6 +184,12 @@ def main():
     parser.add_argument("files", nargs="+", help="One or more .epub files to process")
     parser.add_argument("-a", "--author", help="Override the author name")
     parser.add_argument("-t", "--title", help="Override the book title")
+    parser.add_argument(
+        "-l",
+        "--lang",
+        choices=["en-US", "en-GB", "es-ES", "es-MX", "es-LA"],
+        help="Select language: en-US (USA), en-GB (UK), es-ES (Spain), es-MX/es-LA (Latin America)",
+    )
     parser.add_argument(
         "-f",
         "--format",
