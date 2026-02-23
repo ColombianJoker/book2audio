@@ -16,6 +16,7 @@ usage: book2audio.py
     [ -t TITLE ]  -- The title to use (when not detected in the book)
     [ -f {.m4a,.mp3,.wav,.aiff,m4a,mp3,wav,aiff} ] -- Audio file format
     [ -F FILENAME_FORMAT ] -- Name generation format
+    [ -C CHAPTER ] -- Individual chapter selection
     [ -v ]        -- Verbose mode
     file [files ...]
 ```
