@@ -12,7 +12,7 @@ from ebooklib import epub
 
 # Mapping language codes to common macOS voices
 VOICE_MAPPING = {
-    "en-US": "Samantha",
+    "en-US": "Siri",
     "en-GB": "Daniel",
     "es-ES": "Monica",
     "es-MX": "Paulina",
@@ -57,33 +57,34 @@ def convert_audio(input_file, output_file, ext, verbose):
     """Converts AIFF to the target format using ffmpeg."""
     log(f"Converting {input_file} to {output_file} ({ext})", verbose)
 
+    # Ensure extension matches choice
+    ext = ext.lower()
+
     cmd = ["ffmpeg", "-y", "-i", input_file]
 
     if ext == ".mp3":
         # Optimized for voice: Mono, 64k (standard for speech), variable bitrate
-        cmd += ["-ac", "1", "-libmp3lame", "-q:a", "5"]
+        # Fixed syntax: -c:a libmp3lame instead of -libmp3lame
+        cmd += ["-ac", "1", "-c:a", "libmp3lame", "-q:a", "5"]
     elif ext == ".m4a":
         cmd += ["-c:a", "aac", "-b:a", "128k"]
     elif ext == ".wav":
         cmd += ["-ar", "44100"]
     elif ext == ".aiff":
-        # say already produces aiff, just a copy/rename if needed
         shutil.move(input_file, output_file)
         return
 
     cmd.append(output_file)
 
     try:
-        subprocess.run(
-            cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-    except subprocess.CalledProcessError:
-        print(
-            f"[ERROR] Failed to convert to {ext}. Is ffmpeg installed?", file=sys.stderr
-        )
+        # We capture stderr to see why ffmpeg might be failing
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] ffmpeg failed with exit code {e.returncode}.", file=sys.stderr)
+        print(f"[DEBUG] ffmpeg stderr: {e.stderr}", file=sys.stderr)
     except FileNotFoundError:
         print(
-            "[ERROR] ffmpeg not found. Please install it (brew install ffmpeg) for conversions.",
+            "[ERROR] ffmpeg command not found. Please ensure it is in your PATH.",
             file=sys.stderr,
         )
 
@@ -116,8 +117,8 @@ def process_book(filepath, args):
     log(f"Identified Title: {title}", args.verbose)
 
     # Clean up names for filesystem
-    safe_author = re.sub(r'[\\/*?:"<>|]', "", author)
-    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+    safe_author = re.sub(r'[\\/*?:"<>|]', "", author).strip()
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", title).strip()
 
     # Determine Voice
     voice = VOICE_MAPPING.get(args.lang)
@@ -127,7 +128,9 @@ def process_book(filepath, args):
         log(f"Language {args.lang} not in presets, letting macOS decide.", args.verbose)
 
     # Iterate through chapters
-    chapter_num = 1
+    current_chapter_idx = 1
+    found_target = False
+
     for item in book.get_items():
         if item.get_type() == 9:  # ITEM_DOCUMENT
             content = item.get_content()
@@ -137,14 +140,24 @@ def process_book(filepath, args):
             if len(text) < 150:
                 continue
 
-            log(f"Processing Chapter {chapter_num}...", args.verbose)
+            # Check if we should skip this chapter based on the --chapter selector
+            if args.chapter is not None and current_chapter_idx != args.chapter:
+                current_chapter_idx += 1
+                continue
+
+            if args.chapter is not None:
+                found_target = True
+
+            log(f"Processing Chapter {current_chapter_idx}...", args.verbose)
 
             # Format filename
             ext = args.format if args.format.startswith(".") else f".{args.format}"
             filename_template = args.filename_format.replace(
                 "${Author}", safe_author
             ).replace("${Title}", safe_title)
-            final_filename = filename_template % chapter_num
+
+            # Apply zero-padded chapter number to the template
+            final_filename = filename_template % current_chapter_idx
 
             if "${ext}" in final_filename:
                 final_filename = final_filename.replace("${ext}", ext.lstrip("."))
@@ -170,10 +183,17 @@ def process_book(filepath, args):
 
             except Exception as e:
                 print(
-                    f"[ERROR] TTS or Conversion failed for chapter {chapter_num}: {e}"
+                    f"[ERROR] TTS or Conversion failed for chapter {current_chapter_idx}: {e}"
                 )
 
-            chapter_num += 1
+            current_chapter_idx += 1
+
+            # If we were looking for a specific chapter and found it, we can stop
+            if args.chapter is not None:
+                break
+
+    if args.chapter is not None and not found_target:
+        print(f"[WARNING] Chapter {args.chapter} was not found in {filepath}.")
 
 
 def main():
@@ -202,6 +222,9 @@ def main():
         "--filename-format",
         default="${Author}-${Title} - Chapter %02d.${ext}",
         help="Output filename format. Use ${Author}, ${Title}, and ${ext}",
+    )
+    parser.add_argument(
+        "-C", "--chapter", type=int, help="Process only a specific chapter number"
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Show progress details"
